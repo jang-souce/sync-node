@@ -1,0 +1,397 @@
+openapi: 3.0.0
+info:
+  title: 分布式文件同步系统 API 文档
+  description: |
+    主要定义了中心节点 (Central Node) 对外提供的 HTTP 管理接口，用于任务管理、节点监控和系统配置。
+    该文档遵循 OpenAPI 3.0 规范，可直接导入 Apifox/Postman 进行调试。
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: 本地开发环境 (Central Node)
+
+tags:
+  - name: Task
+    description: 文件同步任务管理
+  - name: Node
+    description: 子节点监控与管理
+  - name: Config
+    description: 全局配置管理
+
+paths:
+  /api/v1/tasks:
+    get:
+      tags:
+        - Task
+      summary: 获取任务列表
+      description: 分页获取文件同步任务列表，支持按文件名过滤。
+      parameters:
+        - name: page
+          in: query
+          description: 页码 (默认 1)
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          description: 每页数量 (默认 10)
+          schema:
+            type: integer
+            default: 10
+        - name: keyword
+          in: query
+          description: 文件名搜索关键字
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功获取任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 200
+                  msg:
+                    type: string
+                    example: success
+                  data:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TaskMeta'
+    post:
+      tags:
+        - Task
+      summary: 创建同步任务
+      description: 提交一个新的文件同步任务。可以是拉取第三方文件，也可以是上传文件（此处简化为提供 URL）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - fileName
+                - sourceUrl
+              properties:
+                fileName:
+                  type: string
+                  description: 目标文件名
+                  example: "update_package_v1.zip"
+                fileHash:
+                  type: string
+                  description: 文件哈希 (MD5)
+                  example: "a1b2c3d4e5f6..."
+                sourceUrl:
+                  type: string
+                  description: 原始文件下载 URL (中心节点将从此处拉取文件上传到 OSS)
+                  example: "https://example.com/files/v1.zip"
+                tag:
+                  type: string
+                  description: 任务标签
+                  example: "v1,update"
+                taskType:
+                  type: integer
+                  description: 任务类型 1:只下载 2:下载后同步删除oss端资源
+                  example: 1
+      responses:
+        '200':
+          description: 任务创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 200
+                  msg:
+                    type: string
+                    example: success
+                  data:
+                    $ref: '#/components/schemas/TaskMeta'
+
+  /api/v1/tasks/{id}:
+    get:
+      tags:
+        - Task
+      summary: 获取任务详情
+      description: 获取指定任务的详细信息，包括元数据和各个节点的同步状态。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 任务 ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功获取详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 200
+                  msg:
+                    type: string
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/TaskMeta'
+                      - type: object
+                        properties:
+                          nodeStates:
+                            type: array
+                            description: 该任务在各个节点的执行状态
+                            items:
+                              $ref: '#/components/schemas/TaskState'
+    delete:
+      tags:
+        - Task
+      summary: 删除任务
+      description: 软删除任务。这可能会触发中心节点清理 OSS 文件，并通知子节点清理本地文件。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 任务 ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/v1/nodes:
+    get:
+      tags:
+        - Node
+      summary: 获取节点列表
+      description: 获取所有注册子节点的实时状态列表。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 200
+                  msg:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NodeState'
+
+  /api/v1/nodes/{id}:
+    get:
+      tags:
+        - Node
+      summary: 获取节点详情
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 节点 ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 200
+                  msg:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/NodeState'
+
+  /api/v1/config:
+    get:
+      tags:
+        - Config
+      summary: 获取全局配置
+      description: 从 Etcd 获取当前系统的全局配置（如心跳间隔、超时时间）。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 200
+                  msg:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/GlobalConfig'
+    put:
+      tags:
+        - Config
+      summary: 更新全局配置
+      description: 更新系统的全局配置，并推送到 Etcd，子节点将实时感知变更。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlobalConfig'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+components:
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 200
+        msg:
+          type: string
+          example: success
+    
+    TaskMeta:
+      type: object
+      description: 任务元数据 (对应 Go Model TaskMeta)
+      properties:
+        id:
+          type: string
+          description: 唯一任务 ID
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        fileName:
+          type: string
+          description: 文件名
+          example: "data.bin"
+        fileSize:
+          type: integer
+          format: int64
+          description: 文件大小 (字节)
+          example: 1048576
+        fileHash:
+          type: string
+          description: 文件哈希 (MD5)
+          example: "a1b2c3d4e5f6..."
+        ossUrl:
+          type: string
+          description: 阿里云 OSS 下载链接
+          example: "https://oss-cn-hangzhou.aliyuncs.com/bucket/data.bin"
+        sourceUrl:
+          type: string
+          description: 原始文件来源 URL
+        tag:
+          type: string
+          description: 任务标签
+        taskType:
+          type: integer
+          description: 任务类型 1:只下载 2:下载后同步删除oss端资源
+        status:
+          type: string
+          description: 任务状态 (pending, processing, completed, failed)
+          enum: [pending, processing, completed, failed]
+        createdAt:
+          type: integer
+          format: int64
+          description: 创建时间戳
+          example: 1678888888
+
+    TaskState:
+      type: object
+      description: 节点任务状态 (对应 Go Model TaskState)
+      properties:
+        id:
+          type: integer
+        taskId:
+          type: string
+        nodeId:
+          type: string
+        status:
+          type: string
+          description: 状态 (pending, downloading, completed, failed)
+          enum: [pending, downloading, completed, failed]
+          example: "downloading"
+        errorMsg:
+          type: string
+        retryCount:
+          type: integer
+          description: 重试次数
+        syncedSize:
+          type: integer
+          format: int64
+          description: 已同步大小
+        updatedAt:
+          type: integer
+          format: int64
+
+    NodeState:
+      type: object
+      description: 节点状态 (对应 Go Model NodeState)
+      properties:
+        nodeId:
+          type: string
+          example: "node-001"
+        hostname:
+          type: string
+          example: "worker-node-1"
+        ip:
+          type: string
+          example: "192.168.1.100"
+        status:
+          type: string
+          description: 在线状态 (online, offline)
+          enum: [online, offline]
+          example: "online"
+        diskUsage:
+          type: number
+          format: float
+          description: 磁盘使用率 (%)
+          example: 45.5
+        totalDisk:
+          type: integer
+          format: int64
+        availableDisk:
+          type: integer
+          format: int64
+        lastHeartbeat:
+          type: integer
+          format: int64
+          description: 最后心跳时间戳
+
+    GlobalConfig:
+      type: object
+      description: 全局配置
+      properties:
+        heartbeatInterval:
+          type: integer
+          description: 心跳间隔 (秒)
+          example: 30
+        taskTimeout:
+          type: integer
+          description: 任务超时时间 (秒)
+          example: 3600

@@ -1,0 +1,29 @@
+server:
+  port: ":8080"
+
+etcd:
+  endpoints:
+    - "localhost:2379"
+  username: ""
+  password: ""
+
+# 数据库配置
+# 可通过环境变量覆盖:
+# POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DBNAME
+postgres:
+  host: "localhost"
+  port: 5432
+  user: "user"
+  password: "password"
+  dbname: "sync_node_db"
+  sslmode: "disable"
+
+oss:
+  endpoint: "oss-cn-beijing.aliyuncs.com"
+  accessKeyId: "YOUR_ACCESS_KEY_ID"
+  accessKeySecret: "YOUR_ACCESS_KEY_SECRET"
+  bucketName: "yang-sync"
+
+log:
+  level: "info"
+  path: "./central.log"

@@ -1,0 +1,14 @@
+node:
+  id: "node-001"
+  workDir: "./downloads"
+  hostname: ""
+
+etcd:
+  endpoints:
+    - "localhost:2379"
+  username: ""
+  password: ""
+
+log:
+  level: "info"
+  path: "./node.log"
