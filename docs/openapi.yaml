@@ -23,7 +23,7 @@ paths:
       tags:
         - Task
       summary: 获取任务列表
-      description: 分页获取文件同步任务列表，支持按文件名过滤。
+      description: 分页获取主任务列表，包含关联的子任务状态。
       parameters:
         - name: page
           in: query
@@ -37,11 +37,6 @@ paths:
           schema:
             type: integer
             default: 10
-        - name: keyword
-          in: query
-          description: 文件名搜索关键字
-          schema:
-            type: string
       responses:
         '200':
           description: 成功获取任务列表
@@ -64,12 +59,12 @@ paths:
                       items:
                         type: array
                         items:
-                          $ref: '#/components/schemas/TaskMeta'
+                          $ref: '#/components/schemas/MainTask'
     post:
       tags:
         - Task
-      summary: 创建同步任务
-      description: 提交一个新的文件同步任务。可以是拉取第三方文件，也可以是上传文件（此处简化为提供 URL）。
+      summary: 创建同步任务 (批量)
+      description: 提交一个新的批量文件同步任务。可以是拉取第三方文件，也可以是上传文件（此处简化为提供 URL）。
       requestBody:
         required: true
         content:
@@ -77,29 +72,37 @@ paths:
             schema:
               type: object
               required:
-                - fileName
-                - sourceUrl
+                - file_data
               properties:
-                fileName:
-                  type: string
-                  description: 目标文件名
-                  example: "update_package_v1.zip"
-                fileHash:
-                  type: string
-                  description: 文件哈希 (MD5)
-                  example: "a1b2c3d4e5f6..."
-                sourceUrl:
-                  type: string
-                  description: 原始文件下载 URL (中心节点将从此处拉取文件上传到 OSS)
-                  example: "https://example.com/files/v1.zip"
-                tag:
-                  type: string
-                  description: 任务标签
-                  example: "v1,update"
-                taskType:
-                  type: integer
-                  description: 任务类型 1:只下载 2:下载后同步删除oss端资源
-                  example: 1
+                file_data:
+                  type: array
+                  description: 待同步的文件列表
+                  items:
+                    type: object
+                    required:
+                      - fileName
+                      - sourceUrl
+                    properties:
+                      fileName:
+                        type: string
+                        description: 目标文件名
+                        example: "update_package_v1.zip"
+                      sourceUrl:
+                        type: string
+                        description: 原始文件下载 URL (中心节点将从此处拉取文件上传到 OSS)
+                        example: "https://example.com/files/v1.zip"
+                      targetNodeId:
+                        type: string
+                        description: 目标节点 ID (为空则随机分发)
+                        example: "node-001"
+                      tag:
+                        type: string
+                        description: 任务标签
+                        example: "v1,update"
+                      taskType:
+                        type: integer
+                        description: 任务类型 1:只下载 2:下载后同步删除oss端资源
+                        example: 1
       responses:
         '200':
           description: 任务创建成功
@@ -115,19 +118,19 @@ paths:
                     type: string
                     example: success
                   data:
-                    $ref: '#/components/schemas/TaskMeta'
+                    $ref: '#/components/schemas/MainTask'
 
   /api/v1/tasks/{id}:
     get:
       tags:
         - Task
       summary: 获取任务详情
-      description: 获取指定任务的详细信息，包括元数据和各个节点的同步状态。
+      description: 获取指定主任务的详细信息，包括所有子任务的执行状态。
       parameters:
         - name: id
           in: path
           required: true
-          description: 任务 ID
+          description: 主任务 ID
           schema:
             type: string
       responses:
@@ -144,25 +147,17 @@ paths:
                   msg:
                     type: string
                   data:
-                    allOf:
-                      - $ref: '#/components/schemas/TaskMeta'
-                      - type: object
-                        properties:
-                          nodeStates:
-                            type: array
-                            description: 该任务在各个节点的执行状态
-                            items:
-                              $ref: '#/components/schemas/TaskState'
+                    $ref: '#/components/schemas/MainTask'
     delete:
       tags:
         - Task
       summary: 删除任务
-      description: 软删除任务。这可能会触发中心节点清理 OSS 文件，并通知子节点清理本地文件。
+      description: 软删除主任务及关联的子任务。这可能会触发中心节点清理 OSS 文件，并通知子节点清理本地文件。
       parameters:
         - name: id
           in: path
           required: true
-          description: 任务 ID
+          description: 主任务 ID
           schema:
             type: string
       responses:
@@ -277,14 +272,42 @@ components:
           type: string
           example: success
     
-    TaskMeta:
+    MainTask:
       type: object
-      description: 任务元数据 (对应 Go Model TaskMeta)
+      description: 主任务信息
       properties:
         id:
           type: string
-          description: 唯一任务 ID
+          description: 主任务 ID
           example: "550e8400-e29b-41d4-a716-446655440000"
+        totalCount:
+          type: integer
+          description: 子任务总数
+          example: 10
+        createdAt:
+          type: integer
+          format: int64
+          description: 创建时间戳
+          example: 1678888888
+        subTasks:
+          type: array
+          description: 关联的子任务列表
+          items:
+            $ref: '#/components/schemas/SubTask'
+
+    SubTask:
+      type: object
+      description: 子任务信息 (对应 Go Model SubTask)
+      properties:
+        id:
+          type: string
+          description: 子任务 ID
+        mainTaskId:
+          type: string
+          description: 关联的主任务 ID
+        nodeId:
+          type: string
+          description: 目标节点 ID
         fileName:
           type: string
           description: 文件名
@@ -293,15 +316,12 @@ components:
           type: integer
           format: int64
           description: 文件大小 (字节)
-          example: 1048576
         fileHash:
           type: string
           description: 文件哈希 (MD5)
-          example: "a1b2c3d4e5f6..."
         ossUrl:
           type: string
-          description: 阿里云 OSS 下载链接
-          example: "https://oss-cn-hangzhou.aliyuncs.com/bucket/data.bin"
+          description: OSS 下载链接
         sourceUrl:
           type: string
           description: 原始文件来源 URL
@@ -310,34 +330,15 @@ components:
           description: 任务标签
         taskType:
           type: integer
-          description: 任务类型 1:只下载 2:下载后同步删除oss端资源
-        status:
-          type: string
-          description: 任务状态 (pending, processing, completed, failed)
-          enum: [pending, processing, completed, failed]
-        createdAt:
-          type: integer
-          format: int64
-          description: 创建时间戳
-          example: 1678888888
-
-    TaskState:
-      type: object
-      description: 节点任务状态 (对应 Go Model TaskState)
-      properties:
-        id:
-          type: integer
-        taskId:
-          type: string
-        nodeId:
-          type: string
+          description: 任务类型
         status:
           type: string
           description: 状态 (pending, downloading, completed, failed)
           enum: [pending, downloading, completed, failed]
-          example: "downloading"
+          example: "pending"
         errorMsg:
           type: string
+          description: 错误信息
         retryCount:
           type: integer
           description: 重试次数
@@ -348,6 +349,11 @@ components:
         updatedAt:
           type: integer
           format: int64
+          description: 更新时间戳
+        createdAt:
+          type: integer
+          format: int64
+          description: 创建时间戳
 
     NodeState:
       type: object

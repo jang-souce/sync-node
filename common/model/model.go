@@ -2,33 +2,38 @@ package model
 
 import "gorm.io/gorm"
 
-// TaskMeta 表示文件同步任务的元数据。
-// 由中心节点创建并存储在 Etcd 和数据库中。
-type TaskMeta struct {
-	ID        string         `json:"id" gorm:"primaryKey;type:varchar(36);comment:唯一任务 ID (例如 UUID)"` // 唯一任务 ID (例如 UUID)
-	FileName  string         `json:"fileName" gorm:"type:varchar(255);not null;comment:文件名"`
-	FileSize  int64          `json:"fileSize" gorm:"not null;comment:文件大小"`
-	FileHash  string         `json:"fileHash" gorm:"type:varchar(64);not null;comment:文件哈希"`
-	OssURL    string         `json:"ossUrl" gorm:"type:text;not null;comment:OSS下载链接"`
-	SourceURL string         `json:"sourceUrl" gorm:"type:text;comment:原始文件来源URL"`                    // 原始文件来源 URL
-	Tag       string         `json:"tag" gorm:"type:varchar(255);comment:标签"`                         // 标签
-	TaskType  int            `json:"taskType" gorm:"default:1;comment:任务类型 1:只下载 2:下载后同步删除OSS"`       // 任务类型 1:只下载 2:下载后同步删除OSS
-	Status    string         `json:"status" gorm:"type:varchar(20);default:'PENDING';comment:任务整体状态"` // 任务整体状态
-	DeletedAt gorm.DeletedAt `json:"deletedAt" gorm:"index;comment:软删除时间"`                            // 软删除时间
-	CreatedAt int64          `json:"createdAt" gorm:"autoCreateTime;comment:创建时间戳(Unix)"`             // 创建时间戳 (Unix)
+// MainTask 主任务表，记录一次批量任务提交的整体信息
+type MainTask struct {
+	ID         string         `json:"id" gorm:"primaryKey;type:varchar(36);comment:主任务ID"`
+	TotalCount int            `json:"totalCount" gorm:"not null;comment:子任务总数"`
+	CreatedAt  int64          `json:"createdAt" gorm:"autoCreateTime;comment:创建时间戳(Unix)"`
+	DeletedAt  gorm.DeletedAt `json:"deletedAt" gorm:"index;comment:软删除时间"`
+	SubTasks   []SubTask      `json:"subTasks" gorm:"foreignKey:MainTaskID"` // 关联子任务
 }
 
-// TaskState 表示特定节点上的任务状态。
-// 由子节点更新以向 Etcd 报告进度。
-type TaskState struct {
-	ID         uint   `json:"-" gorm:"primaryKey;comment:内部数据库 ID"` // 内部数据库 ID
-	TaskID     string `json:"taskId" gorm:"type:varchar(36);index;not null;comment:任务ID"`
-	NodeID     string `json:"nodeId" gorm:"type:varchar(36);index;not null;comment:节点ID"`
-	Status     string `json:"status" gorm:"type:varchar(20);not null;comment:状态"`
-	ErrorMsg   string `json:"errorMsg" gorm:"type:text;comment:错误信息"`
-	RetryCount int    `json:"retryCount" gorm:"default:0;comment:重试次数"`              // 重试次数
-	SyncedSize int64  `json:"syncedSize" gorm:"default:0;comment:已同步字节数"`            // 已同步字节数
-	UpdatedAt  int64  `json:"updatedAt" gorm:"autoUpdateTime;comment:最后更新时间戳(Unix)"` // 最后更新时间戳 (Unix)
+// SubTask 子任务表 (原 TaskMeta)，具体的文件分发任务，一对一绑定节点
+type SubTask struct {
+	ID         string `json:"id" gorm:"primaryKey;type:varchar(36);comment:子任务ID"`
+	MainTaskID string `json:"mainTaskId" gorm:"type:varchar(36);index;not null;comment:关联主任务ID"`
+	NodeID     string `json:"nodeId" gorm:"type:varchar(36);index;not null;comment:目标节点ID"`
+
+	// 文件信息
+	FileName  string `json:"fileName" binding:"required" gorm:"type:varchar(255);not null;comment:文件名"`
+	FileSize  int64  `json:"fileSize" gorm:"not null;comment:文件大小"`
+	FileHash  string `json:"fileHash" gorm:"type:varchar(64);not null;comment:文件哈希"`
+	OssURL    string `json:"ossUrl" gorm:"type:text;not null;comment:OSS下载链接"`
+	SourceURL string `json:"sourceUrl" binding:"required,url" gorm:"type:text;comment:原始文件来源URL"`
+	Tag       string `json:"tag" gorm:"type:varchar(255);comment:标签"`
+	TaskType  int    `json:"taskType" binding:"oneof=1 2" gorm:"default:1;comment:任务类型 1:只下载 2:下载后同步删除OSS"`
+
+	// 任务状态 (原 TaskState 内容)
+	Status     string         `json:"status" gorm:"type:varchar(20);default:'PENDING';comment:状态"`
+	ErrorMsg   string         `json:"errorMsg" gorm:"type:text;comment:错误信息"`
+	RetryCount int            `json:"retryCount" gorm:"default:0;comment:重试次数"`
+	SyncedSize int64          `json:"syncedSize" gorm:"default:0;comment:已同步字节数"`
+	UpdatedAt  int64          `json:"updatedAt" gorm:"autoUpdateTime;comment:最后更新时间戳(Unix)"`
+	CreatedAt  int64          `json:"createdAt" gorm:"autoCreateTime;comment:创建时间戳(Unix)"`
+	DeletedAt  gorm.DeletedAt `json:"deletedAt" gorm:"index;comment:软删除时间"`
 }
 
 // NodeState 表示子节点的运行时状态。

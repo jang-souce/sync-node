@@ -19,10 +19,19 @@ postgres:
   sslmode: "disable"
 
 oss:
+  provider: "aliyun" # aliyun or minio
   endpoint: "oss-cn-beijing.aliyuncs.com"
-  accessKeyId: "YOUR_ACCESS_KEY_ID"
-  accessKeySecret: "YOUR_ACCESS_KEY_SECRET"
+  accessKeyId: "key"
+  accessKeySecret: "secret"
   bucketName: "yang-sync"
+
+sms:
+  accessKeyId: "key" # 假设与OSS使用相同的AK，实际应根据IAM分配
+  accessKeySecret: "secret"
+  signName: "SyncNode" # 替换为实际签名
+  templateCode: "SMS_123456789" # 替换为实际模板ID
+  phoneNumbers: 
+    - "13800000000"
 
 log:
   level: "info"

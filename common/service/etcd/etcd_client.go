@@ -34,9 +34,8 @@ func (c *Client) Close() error {
 }
 
 // Put 写入键值对
-func (c *Client) Put(ctx context.Context, key, value string, opts ...clientv3.OpOption) error {
-	_, err := c.cli.Put(ctx, key, value, opts...)
-	return err
+func (c *Client) Put(ctx context.Context, key, value string, opts ...clientv3.OpOption) (*clientv3.PutResponse, error) {
+	return c.cli.Put(ctx, key, value, opts...)
 }
 
 // Get 获取键值对
@@ -61,6 +60,11 @@ func (c *Client) GrantLease(ctx context.Context, ttl int64) (clientv3.LeaseID, e
 // KeepAlive 保持租约 (心跳)
 func (c *Client) KeepAlive(ctx context.Context, leaseID clientv3.LeaseID) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
 	return c.cli.KeepAlive(ctx, leaseID)
+}
+
+// Delete 删除键
+func (c *Client) Delete(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.DeleteResponse, error) {
+	return c.cli.Delete(ctx, key, opts...)
 }
 
 // GetClient 获取底层客户端实例 (用于高级操作)

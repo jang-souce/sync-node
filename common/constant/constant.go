@@ -2,10 +2,11 @@ package constant
 
 const (
 	// etcd Key值
-	EtcdRootPrefix   = "/file_sync/"
-	EtcdNodePrefix   = EtcdRootPrefix + "node/"
-	EtcdTaskPrefix   = EtcdRootPrefix + "task/"
-	EtcdConfigPrefix = EtcdRootPrefix + "config/"
+	EtcdRootPrefix       = "/file_sync/"
+	EtcdNodePrefix       = EtcdRootPrefix + "node/"
+	EtcdTaskPrefix       = EtcdRootPrefix + "task/"
+	EtcdTaskStatusPrefix = EtcdRootPrefix + "status/"
+	EtcdConfigPrefix     = EtcdRootPrefix + "config/"
 
 	// 节点状态
 	NodeStatusOnline  = "online"

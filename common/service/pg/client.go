@@ -43,8 +43,8 @@ func NewClient(dsn string) (*Client, error) {
 func (c *Client) AutoMigrate() error {
 	log.Println("初始化数据库自动迁移...")
 	err := c.db.AutoMigrate(
-		&model.TaskMeta{},
-		&model.TaskState{},
+		&model.MainTask{},
+		&model.SubTask{},
 		&model.NodeState{},
 		&model.GlobalConfig{},
 	)
