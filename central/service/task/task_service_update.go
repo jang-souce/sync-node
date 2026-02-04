@@ -57,5 +57,29 @@ func (s *TaskService) UpdateTaskStatus(ctx context.Context, subTaskID string, st
 		}()
 	}
 
+	// 3. 检查是否完成，且任务类型为下载后删除OSS
+	if status == constant.TaskStatusCompleted {
+		var sub model.SubTask
+		if err := s.db.First(&sub, "id = ?", subTaskID).Error; err != nil {
+			utils.GetLogger("task").Errorf("Failed to query subtask %s for completion check: %v", subTaskID, err)
+		} else {
+			// TaskType 2: 下载后同步删除OSS
+			if sub.TaskType == 2 {
+				// 异步删除 OSS 对象
+				go func(objectKey string) {
+					if objectKey == "" {
+						utils.GetLogger("task").Warnf("Task %s is set to delete OSS object but OssKey is empty", subTaskID)
+						return
+					}
+					if err := s.oss.DeleteFile(objectKey); err != nil {
+						utils.GetLogger("task").Errorf("Failed to delete OSS object %s for task %s: %v", objectKey, subTaskID, err)
+					} else {
+						utils.GetLogger("task").Infof("Successfully deleted OSS object %s for task %s", objectKey, subTaskID)
+					}
+				}(sub.OssKey)
+			}
+		}
+	}
+
 	return nil
 }

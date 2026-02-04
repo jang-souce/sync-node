@@ -3,15 +3,25 @@ version: '3'
 services:
   etcd:
     image: quay.io/coreos/etcd:v3.5.9
-    command: /usr/local/bin/etcd --advertise-client-urls http://0.0.0.0:2379 --listen-client-urls http://0.0.0.0:2379
+    restart: always
+    command: /usr/local/bin/etcd --advertise-client-urls http://etcd:2379 --listen-client-urls http://0.0.0.0:2379
     ports:
       - "2379:2379"
       - "2380:2380"
+      - "8090:8080"
     networks:
       - sync-net
 
+  etcdkeeper:
+    image: evildecay/etcdkeeper
+    restart: always
+    network_mode: "service:etcd"
+    depends_on:
+      - etcd
+
   postgres:
     image: postgres:15
+    restart: always
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
@@ -23,44 +33,16 @@ services:
     networks:
       - sync-net
 
-  minio:
-    image: minio/minio:RELEASE.2024-01-18T22-51-28Z
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data --console-address ":9001"
-    networks:
-      - sync-net
-    volumes:
-      - minio_data:/data
-
-  createbuckets:
-    image: minio/mc
-    depends_on:
-      - minio
-    networks:
-      - sync-net
-    entrypoint: >
-      /bin/sh -c "
-      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
-      /usr/bin/mc mb myminio/sync-bucket;
-      /usr/bin/mc anonymous set public myminio/sync-bucket;
-      exit 0;
-      "
-
   central:
     build:
       context: .
       dockerfile: central/Dockerfile
+    restart: always
     ports:
-      - "8080:8080"
+      - "8088:8088"
     depends_on:
       - etcd
       - postgres
-      - minio
     environment:
       - ETCD_ENDPOINTS=http://etcd:2379
       - POSTGRES_HOST=postgres
@@ -69,24 +51,44 @@ services:
       - POSTGRES_PASSWORD=password
       - POSTGRES_DBNAME=sync_node_db
       - POSTGRES_SSLMODE=disable
-      - OSS_ENDPOINT=oss-cn-beijing.aliyuncs.com
-      - OSS_ACCESSKEYID=YOUR_ACCESS_KEY_ID
-      - OSS_ACCESSKEYSECRET=YOUR_ACCESS_KEY_SECRET
+      - OSS_PROVIDER=aliyun
+      - OSS_ENDPOINT=https://oss-cn-beijing.aliyuncs.com
+      - OSS_ACCESSKEYID=your-access-key-id
+      - OSS_ACCESSKEYSECRET=your-access-key-secret
       - OSS_BUCKETNAME=yang-sync
     networks:
       - sync-net
 
-  node:
+  node-1:
     build:
       context: .
       dockerfile: node/Dockerfile
-    ports:
-      - "8081:8081"
-    depends_on:
-      - central
-      - etcd
+    restart: always
     environment:
       - ETCD_ENDPOINTS=http://etcd:2379
+      - NODE_ID=node-1
+    networks:
+      - sync-net
+
+  node-2:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    restart: always
+    environment:
+      - ETCD_ENDPOINTS=http://etcd:2379
+      - NODE_ID=node-2
+    networks:
+      - sync-net
+
+  node-3:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    restart: always
+    environment:
+      - ETCD_ENDPOINTS=http://etcd:2379
+      - NODE_ID=node-3
     networks:
       - sync-net
 
@@ -96,4 +98,3 @@ networks:
 
 volumes:
   pg_data:
-  minio_data:

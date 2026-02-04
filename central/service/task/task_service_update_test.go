@@ -42,8 +42,10 @@ func TestTaskService_UpdateTaskStatus(t *testing.T) {
 	// 设置 Alert Mock 期望: 当任务状态更新为失败时，期望调用 SendAlert 发送报警
 	mockAlert.On("SendAlert", mock.Anything).Return(nil)
 
-	// 创建 Service 实例 (只需要 DB 和 AlertService)
-	service := NewTaskService(db, nil, nil, mockAlert)
+	mockOSS := new(MockOSSService)
+
+	// 创建 Service 实例
+	service := NewTaskService(db, nil, mockOSS, mockAlert)
 
 	// 4. 测试场景: 成功更新状态
 	// 将状态更新为 Downloading，并设置同步进度为 100
@@ -70,4 +72,33 @@ func TestTaskService_UpdateTaskStatus(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	// 验证报警是否被调用
 	mockAlert.AssertExpectations(t)
+
+	// 6. 测试场景: 任务完成且类型为同步删除OSS
+	// 创建一个新的子任务，TaskType=2
+	subTask2 := &model.SubTask{
+		ID:         "sub-task-2",
+		NodeID:     "node-1",
+		Status:     constant.TaskStatusPending,
+		CreatedAt:  time.Now().Unix(),
+		MainTaskID: "main-task-1",
+		TaskType:   2,
+		OssKey:     "tasks/uuid/file.txt",
+	}
+	db.Create(subTask2)
+
+	// 设置 Mock OSS 期望
+	mockOSS.On("DeleteFile", "tasks/uuid/file.txt").Return(nil)
+
+	// 将状态更新为 Completed
+	err = service.UpdateTaskStatus(context.Background(), "sub-task-2", constant.TaskStatusCompleted, "", 100)
+	assert.NoError(t, err)
+
+	// 验证数据库更新结果
+	updated = model.SubTask{} // Reset to avoid GORM using previous ID in query
+	db.First(&updated, "id = ?", "sub-task-2")
+	assert.Equal(t, constant.TaskStatusCompleted, updated.Status)
+
+	// 验证 DeleteFile 被调用 (异步)
+	time.Sleep(100 * time.Millisecond)
+	mockOSS.AssertExpectations(t)
 }

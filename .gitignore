@@ -35,3 +35,4 @@ config/config.yaml
 .env
 config/config.yaml
 .env
+view/

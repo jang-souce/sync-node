@@ -36,7 +36,11 @@ func init() {
 
 	// 注册 JSON tag 作为字段名
 	validate.RegisterTagNameFunc(func(fld reflect.StructField) string {
-		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
+		parts := strings.SplitN(fld.Tag.Get("json"), ",", 2)
+		if len(parts) == 0 {
+			return ""
+		}
+		name := parts[0]
 		if name == "-" {
 			return ""
 		}

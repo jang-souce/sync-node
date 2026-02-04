@@ -23,7 +23,7 @@ sync-node/
 ├── node/               # 子节点 (Worker Node)
 │   ├── config/         # 子节点配置
 │   ├── module/         # 业务模块 (心跳、任务)
-│   ├── service/        # 基础设施服务 (HTTP下载等)
+│   ├── service/        # 基础设施服务 (HTTP下载、Etcd交互)
 │   ├── util/           # 子节点专用工具 (文件操作等)
 │   └── main.go         # 子节点入口
 ├── common/             # 公共组件库
@@ -31,7 +31,7 @@ sync-node/
 │   ├── model/          # 数据模型 (GORM/JSON)
 │   ├── service/        # 公共服务客户端 (Etcd, PG)
 │   ├── sms/            # 短信服务
-│   └── utils/          # 通用工具 (Logger, JSON, Hash)
+│   └── utils/          # 通用工具 (Logger, JSON, Hash, Retry, Redact)
 ├── db/                 # 数据库脚本
 │   └── schema.sql      # 初始化 SQL
 ├── docs/               # 项目文档

@@ -74,7 +74,7 @@ func main() {
 
 	// 初始化各业务服务
 	taskService := task.NewTaskService(pgClient.GetDB(), etcdClient, ossService, alertService)
-	nodeService := node.NewNodeService(etcdClient)
+	nodeService := node.NewNodeService(pgClient.GetDB())
 	configService := configServicePkg.NewConfigService(etcdClient)
 
 	// 启动节点监控
@@ -85,7 +85,7 @@ func main() {
 
 	// 启动节点 Watcher (监听状态变化、断联报警、在线统计)
 	// 实时监听 Etcd 事件
-	watcher := node.NewWatcher(etcdClient, alertService, taskService)
+	watcher := node.NewWatcher(etcdClient, pgClient.GetDB(), alertService, taskService)
 	watcher.Start()
 	defer watcher.Stop()
 

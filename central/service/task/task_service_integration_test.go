@@ -63,6 +63,11 @@ func (m *MockOSSIntegration) GetDownloadURL(objectName string, expiry int) (stri
 	return "http://mock-oss/" + objectName, nil
 }
 
+func (m *MockOSSIntegration) DeleteFile(objectName string) error {
+	// 模拟删除文件成功
+	return nil
+}
+
 // TestTaskService_Integration 验证完整流程（集成测试）
 // 使用 DB（默认 SQLite，如果设置了环境变量则使用 PostgreSQL）
 // 并将插入的数据打印到控制台以进行验证。

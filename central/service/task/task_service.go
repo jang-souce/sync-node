@@ -99,11 +99,12 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 	var subTasks []model.SubTask
 
 	// 缓存已处理的文件信息，避免重复下载上传
-	// key: sourceURL, value: (fileSize, fileHash, ossURL)
+	// key: sourceURL, value: (fileSize, fileHash, ossURL, ossKey)
 	processedFiles := make(map[string]struct {
 		Size int64
 		Hash string
 		URL  string
+		Key  string
 	})
 
 	for _, fileReq := range req.Files {
@@ -125,7 +126,7 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 		info, ok := processedFiles[fileReq.SourceURL]
 		if !ok {
 			// 下载并上传 OSS
-			size, hash, url, err := s.processFile(fileReq.SourceURL, fileReq.FileName)
+			size, hash, url, key, err := s.processFile(fileReq.SourceURL, fileReq.FileName)
 			if err != nil {
 				return nil, fmt.Errorf("failed to process file %s: %w", fileReq.FileName, err)
 			}
@@ -133,7 +134,8 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 				Size int64
 				Hash string
 				URL  string
-			}{size, hash, url}
+				Key  string
+			}{size, hash, url, key}
 			processedFiles[fileReq.SourceURL] = info
 		}
 
@@ -146,6 +148,7 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 			FileSize:   info.Size,
 			FileHash:   info.Hash,
 			OssURL:     info.URL,
+			OssKey:     info.Key,
 			SourceURL:  fileReq.SourceURL,
 			Tag:        fileReq.Tag,
 			TaskType:   fileReq.TaskType,
@@ -199,19 +202,19 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 }
 
 // processFile 下载文件并上传到 OSS
-// 返回: fileSize, fileHash, ossURL, error
-func (s *TaskService) processFile(sourceURL, fileName string) (int64, string, string, error) {
+// 返回: fileSize, fileHash, ossURL, objectKey, error
+func (s *TaskService) processFile(sourceURL, fileName string) (int64, string, string, string, error) {
 	// 下载临时文件
 	tmpFile, err := os.CreateTemp("", "sync-task-*")
 	if err != nil {
-		return 0, "", "", fmt.Errorf("failed to create temp file: %w", err)
+		return 0, "", "", "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	defer os.Remove(tmpFile.Name())
 	defer tmpFile.Close()
 
 	resp, err := http.Get(sourceURL)
 	if err != nil {
-		return 0, "", "", fmt.Errorf("failed to download source file: %w", err)
+		return 0, "", "", "", fmt.Errorf("failed to download source file: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -220,7 +223,7 @@ func (s *TaskService) processFile(sourceURL, fileName string) (int64, string, st
 	writer := io.MultiWriter(tmpFile, hash)
 	written, err := io.Copy(writer, resp.Body)
 	if err != nil {
-		return 0, "", "", fmt.Errorf("failed to save temp file: %w", err)
+		return 0, "", "", "", fmt.Errorf("failed to save temp file: %w", err)
 	}
 
 	fileHash := hex.EncodeToString(hash.Sum(nil))
@@ -232,16 +235,16 @@ func (s *TaskService) processFile(sourceURL, fileName string) (int64, string, st
 	objectKey := fmt.Sprintf("tasks/%s/%s", uuid.New().String(), fileName)
 	_, err = s.oss.UploadFile(objectKey, tmpFile, written, "application/octet-stream")
 	if err != nil {
-		return 0, "", "", fmt.Errorf("failed to upload to oss: %w", err)
+		return 0, "", "", "", fmt.Errorf("failed to upload to oss: %w", err)
 	}
 
 	// 获取下载链接 (1年有效期)
 	url, err := s.oss.GetDownloadURL(objectKey, 3600*24*365)
 	if err != nil {
-		return 0, "", "", fmt.Errorf("failed to get oss url: %w", err)
+		return 0, "", "", "", fmt.Errorf("failed to get oss url: %w", err)
 	}
 
-	return written, fileHash, url, nil
+	return written, fileHash, url, objectKey, nil
 }
 
 // GetTasks 获取主任务列表

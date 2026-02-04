@@ -18,7 +18,7 @@ func TestConfigHotReload(t *testing.T) {
 
 	initialConfig := `
 server:
-  port: ":8080"
+  port: ":8088"
 log:
   level: "info"
 `
@@ -31,7 +31,7 @@ log:
 	require.NoError(t, err)
 
 	// 验证初始值
-	assert.Equal(t, ":8080", GlobalConfig.Server.Port)
+	assert.Equal(t, ":8088", GlobalConfig.Server.Port)
 	assert.Equal(t, "info", GlobalConfig.Log.Level)
 
 	// 3. 修改配置文件

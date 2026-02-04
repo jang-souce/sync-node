@@ -82,3 +82,36 @@ func (c *Client) NewMutex(pfx string) (*concurrency.Mutex, error) {
 	// 基于会话创建锁
 	return concurrency.NewMutex(session, pfx), nil
 }
+
+type MutexHandle struct {
+	mu      *concurrency.Mutex
+	session *concurrency.Session
+}
+
+func (c *Client) AcquireMutex(ctx context.Context, pfx string, ttl int) (*MutexHandle, error) {
+	session, err := concurrency.NewSession(c.cli, concurrency.WithTTL(ttl))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create etcd session: %w", err)
+	}
+	mu := concurrency.NewMutex(session, pfx)
+	if err := mu.Lock(ctx); err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	return &MutexHandle{mu: mu, session: session}, nil
+}
+
+func (h *MutexHandle) Unlock(ctx context.Context) error {
+	err := h.mu.Unlock(ctx)
+	_ = h.session.Close()
+	return err
+}
+
+func (c *Client) WithLock(ctx context.Context, pfx string, ttl int, fn func(ctx context.Context) error) error {
+	h, err := c.AcquireMutex(ctx, pfx, ttl)
+	if err != nil {
+		return err
+	}
+	defer h.Unlock(ctx)
+	return fn(ctx)
+}

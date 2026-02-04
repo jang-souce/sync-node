@@ -28,6 +28,10 @@ type OSSService interface {
 	// objectName: 对象名
 	// expiry: 过期时间（秒）
 	GetDownloadURL(objectName string, expiry int) (string, error)
+
+	// DeleteFile 删除文件
+	// objectName: 对象名
+	DeleteFile(objectName string) error
 }
 
 // AliyunOSS 阿里云 OSS 实现
@@ -113,6 +117,14 @@ func (s *AliyunOSS) GetDownloadURL(objectName string, expiry int) (string, error
 	return signedURL, nil
 }
 
+func (s *AliyunOSS) DeleteFile(objectName string) error {
+	bucket, err := s.getBucket()
+	if err != nil {
+		return err
+	}
+	return bucket.DeleteObject(objectName)
+}
+
 func newMinIOOSS(cfg *config.Config) (*MinIOOSS, error) {
 	// MinIO 需要去掉 endpoint 中的 http:// 前缀
 	endpoint := strings.TrimPrefix(cfg.OSS.Endpoint, "http://")
@@ -152,4 +164,8 @@ func (s *MinIOOSS) GetDownloadURL(objectName string, expiry int) (string, error)
 		return "", err
 	}
 	return presignedURL.String(), nil
+}
+
+func (s *MinIOOSS) DeleteFile(objectName string) error {
+	return s.client.RemoveObject(context.Background(), s.bucketName, objectName, minio.RemoveObjectOptions{})
 }

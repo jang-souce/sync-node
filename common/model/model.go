@@ -22,6 +22,7 @@ type SubTask struct {
 	FileSize  int64  `json:"fileSize" gorm:"not null;comment:文件大小"`
 	FileHash  string `json:"fileHash" gorm:"type:varchar(64);not null;comment:文件哈希"`
 	OssURL    string `json:"ossUrl" gorm:"type:text;not null;comment:OSS下载链接"`
+	OssKey    string `json:"ossKey" gorm:"type:varchar(255);comment:OSS对象Key"`
 	SourceURL string `json:"sourceUrl" binding:"required,url" gorm:"type:text;comment:原始文件来源URL"`
 	Tag       string `json:"tag" gorm:"type:varchar(255);comment:标签"`
 	TaskType  int    `json:"taskType" binding:"oneof=1 2" gorm:"default:1;comment:任务类型 1:只下载 2:下载后同步删除OSS"`
@@ -42,6 +43,7 @@ type NodeState struct {
 	NodeID        string  `json:"nodeId" gorm:"primaryKey;type:varchar(36);comment:节点ID"`
 	Hostname      string  `json:"hostname" gorm:"type:varchar(255);comment:主机名"`
 	IP            string  `json:"ip" gorm:"type:varchar(50);comment:IP地址"`
+	Port          string  `json:"port" gorm:"type:varchar(10);comment:端口"`
 	Status        string  `json:"status" gorm:"type:varchar(20);comment:状态"`
 	DiskUsage     float64 `json:"diskUsage" gorm:"type:decimal(5,2);comment:磁盘使用率百分比"` // 磁盘使用率百分比
 	TotalDisk     int64   `json:"totalDisk" gorm:"comment:总磁盘空间(字节)"`                  // 总磁盘空间 (字节)

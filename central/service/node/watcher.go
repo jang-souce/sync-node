@@ -13,11 +13,13 @@ import (
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"gorm.io/gorm"
 )
 
 // Watcher 负责监听节点状态和任务状态变化
 type Watcher struct {
 	etcdClient   *etcd.Client
+	db           *gorm.DB
 	alertService alert.AlertService
 	taskService  *task.TaskService
 	stopChan     chan struct{}
@@ -28,9 +30,10 @@ type Watcher struct {
 	onlineNodes sync.Map
 }
 
-func NewWatcher(etcdClient *etcd.Client, alertService alert.AlertService, taskService *task.TaskService) *Watcher {
+func NewWatcher(etcdClient *etcd.Client, db *gorm.DB, alertService alert.AlertService, taskService *task.TaskService) *Watcher {
 	return &Watcher{
 		etcdClient:   etcdClient,
+		db:           db,
 		alertService: alertService,
 		taskService:  taskService,
 		stopChan:     make(chan struct{}),
@@ -72,6 +75,10 @@ func (w *Watcher) loadInitialNodes() {
 		var node model.NodeState
 		if err := json.Unmarshal(kv.Value, &node); err == nil {
 			w.onlineNodes.Store(node.NodeID, &node)
+			// 同步到数据库
+			if err := w.db.Save(&node).Error; err != nil {
+				utils.GetLogger("watcher").Errorf("Failed to save initial node to DB for %s: %v", node.NodeID, err)
+			}
 			utils.GetLogger("watcher").Infof("Loaded node: %s (status: %s)", node.NodeID, node.Status)
 		}
 	}
@@ -142,12 +149,23 @@ func (w *Watcher) handleNodeEvent(ev *clientv3.Event) {
 
 		// 更新缓存
 		w.onlineNodes.Store(nodeID, &node)
+
+		// 同步到数据库 (Upsert)
+		if err := w.db.Save(&node).Error; err != nil {
+			utils.GetLogger("watcher").Errorf("Failed to save node state to DB for %s: %v", nodeID, err)
+		}
+
 		utils.GetLogger("watcher").Infof("Node updated: %s (status: %s, heartbeat: %d)", nodeID, node.Status, node.LastHeartbeat)
 
 	case clientv3.EventTypeDelete:
 		// 节点被删除（可能是过期或主动注销）
 		w.onlineNodes.Delete(nodeID)
-		utils.GetLogger("watcher").Warnf("Node removed: %s", nodeID)
+		utils.GetLogger("watcher").Warnf("Node removed from etcd (offline): %s", nodeID)
+
+		// 更新数据库状态为 offline，而不是删除
+		if err := w.db.Model(&model.NodeState{}).Where("node_id = ?", nodeID).Update("status", constant.NodeStatusOffline).Error; err != nil {
+			utils.GetLogger("watcher").Errorf("Failed to update node status to offline in DB for %s: %v", nodeID, err)
+		}
 
 		// 触发报警：节点被移除/过期
 		w.sendNodeAlert(nodeID, "NodeRemoved/Expired")
@@ -173,6 +191,11 @@ func (w *Watcher) handleTaskStatusEvent(ev *clientv3.Event) {
 	if err := json.Unmarshal(ev.Kv.Value, &report); err != nil {
 		utils.GetLogger("watcher").Errorf("Failed to unmarshal task status report: %v", err)
 		return
+	}
+
+	// 补充 ID (从 Key 中解析)
+	if report.ID == "" {
+		report.ID = string(ev.Kv.Key)[len(constant.EtcdTaskStatusPrefix):]
 	}
 
 	// 调用 TaskService.UpdateTaskStatus 更新到数据库并处理后续逻辑（如报警）

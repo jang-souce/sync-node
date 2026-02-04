@@ -107,6 +107,12 @@ func (m *MockOSSService) GetDownloadURL(objectName string, expiration int) (stri
 	return args.String(0), args.Error(1)
 }
 
+// DeleteFile 模拟删除文件
+func (m *MockOSSService) DeleteFile(objectName string) error {
+	args := m.Called(objectName)
+	return args.Error(0)
+}
+
 // MockAlertService 模拟报警服务
 type MockAlertService struct {
 	mock.Mock
