@@ -2,18 +2,29 @@ package node
 
 import (
 	"context"
+	"os"
 	"sync-node/common/model"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 func setupTestDB(t *testing.T) *gorm.DB {
-	// Use a unique DB name for each test to avoid shared cache collisions
-	dbName := "file::memory:?cache=shared&_query_id=" + t.Name()
-	db, _ := gorm.Open(sqlite.Open(dbName), &gorm.Config{})
+	dsn := os.Getenv("TEST_DB_DSN")
+	if dsn == "" {
+		// 默认连接本地 Postgres
+		dsn = "host=localhost user=user password=password dbname=sync_node_db port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to connect to postgres: %v. Ensure PostgreSQL is running.", err)
+	}
+
+	// 清理 NodeState 表
+	db.Migrator().DropTable(&model.NodeState{})
 	db.AutoMigrate(&model.NodeState{})
 	return db
 }

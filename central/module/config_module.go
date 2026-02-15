@@ -6,8 +6,8 @@ import (
 	"sync-node/central/handler"
 	"sync-node/central/service/config"
 	"sync-node/common/model"
+	"sync-node/common/service/etcd"
 
-	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/fx"
 )
 
@@ -28,7 +28,7 @@ var ConfigModule = fx.Module("config",
 		},
 		// Bind EtcdClient interface
 		// 绑定 Etcd 客户端接口
-		func(c *clientv3.Client) config.EtcdClient {
+		func(c *etcd.Client) config.EtcdClient {
 			return c
 		},
 	),

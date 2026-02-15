@@ -47,6 +47,11 @@ func (m *MockEtcdClientIntegration) Delete(ctx context.Context, key string, opts
 	return args.Get(0).(*clientv3.DeleteResponse), args.Error(1)
 }
 
+func (m *MockEtcdClientIntegration) GrantLease(ctx context.Context, ttl int64) (clientv3.LeaseID, error) {
+	args := m.Called(ctx, ttl)
+	return args.Get(0).(clientv3.LeaseID), args.Error(1)
+}
+
 // MockOSSIntegration 模拟 oss.OSSService 接口，用于集成测试
 type MockOSSIntegration struct {
 	mock.Mock
@@ -66,6 +71,14 @@ func (m *MockOSSIntegration) GetDownloadURL(objectName string, expiry int) (stri
 func (m *MockOSSIntegration) DeleteFile(objectName string) error {
 	// 模拟删除文件成功
 	return nil
+}
+
+func (m *MockOSSIntegration) GetObjectInfo(objectName string) (int64, string, error) {
+	return 0, "", fmt.Errorf("not implemented")
+}
+
+func (m *MockOSSIntegration) ParseObjectKeyFromURL(url string) (string, bool) {
+	return "", false
 }
 
 // TestTaskService_Integration 验证完整流程（集成测试）
@@ -102,9 +115,18 @@ func TestTaskService_Integration(t *testing.T) {
 		return len(key) > len(constant.EtcdTaskPrefix)
 	}), mock.Anything, mock.Anything).Return(nil, nil)
 
+	// Mock Locker
+	mockLocker := new(MockLocker)
+	mockMutex := new(MockMutex)
+	mockMutex.On("Unlock", mock.Anything).Return(nil)
+	mockLocker.On("Lock", mock.Anything, mock.Anything, mock.Anything).Return(mockMutex, nil)
+
+	// Mock Etcd GrantLease
+	mockEtcd.On("GrantLease", mock.Anything, mock.Anything).Return(clientv3.LeaseID(123), nil)
+
 	// 3. Init Service
 	// 初始化 TaskService
-	service := NewTaskService(db, mockEtcd, mockOSS, mockAlert)
+	service := NewTaskService(db, mockEtcd, mockLocker, mockOSS, mockAlert)
 
 	// 4. Create Task
 	// 创建任务请求

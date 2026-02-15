@@ -13,7 +13,9 @@ import (
 	"sync-node/central/service/alert"
 	"sync-node/central/service/oss"
 	"sync-node/common/constant"
+	"sync-node/common/lock"
 	"sync-node/common/model"
+	"sync-node/common/utils"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,21 +28,24 @@ type EtcdClient interface {
 	Put(ctx context.Context, key, value string, opts ...clientv3.OpOption) (*clientv3.PutResponse, error)
 	Delete(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.DeleteResponse, error)
 	Get(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error)
+	GrantLease(ctx context.Context, ttl int64) (clientv3.LeaseID, error)
 }
 
 // TaskService 任务管理服务，处理任务的创建、查询和分发
 type TaskService struct {
 	db           *gorm.DB
 	etcd         EtcdClient
+	locker       lock.Locker
 	oss          oss.OSSService
 	alertService alert.AlertService
 }
 
 // NewTaskService 创建 TaskService 实例
-func NewTaskService(db *gorm.DB, etcd EtcdClient, oss oss.OSSService, alertService alert.AlertService) *TaskService {
+func NewTaskService(db *gorm.DB, etcd EtcdClient, locker lock.Locker, oss oss.OSSService, alertService alert.AlertService) *TaskService {
 	return &TaskService{
 		db:           db,
 		etcd:         etcd,
+		locker:       locker,
 		oss:          oss,
 		alertService: alertService,
 	}
@@ -70,13 +75,17 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 	// 1. 获取在线节点列表 (用于随机分发) - 懒加载
 	var onlineNodes []string
 	var fetchNodesOnce bool
+	const etcdTimeout = 5 * time.Second
 
 	getOnlineNodes := func() ([]string, error) {
 		if fetchNodesOnce {
 			return onlineNodes, nil
 		}
 		// 从 Etcd 获取所有在线节点
-		resp, err := s.etcd.Get(ctx, constant.EtcdNodePrefix, clientv3.WithPrefix())
+		tCtx, cancel := context.WithTimeout(ctx, etcdTimeout)
+		defer cancel()
+
+		resp, err := s.etcd.Get(tCtx, constant.EtcdNodePrefix, clientv3.WithPrefix())
 		if err != nil {
 			return nil, fmt.Errorf("failed to get online nodes: %w", err)
 		}
@@ -93,6 +102,7 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 	mainTask := &model.MainTask{
 		ID:         uuid.New().String(),
 		TotalCount: len(req.Files),
+		Status:     constant.TaskStatusPending,
 	}
 
 	// 3. 处理文件并生成 SubTasks
@@ -139,6 +149,9 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 			processedFiles[fileReq.SourceURL] = info
 		}
 
+		// 累加总大小
+		mainTask.TotalSize += info.Size
+
 		// 创建子任务
 		subTask := model.SubTask{
 			ID:         uuid.New().String(),
@@ -176,7 +189,33 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 		return nil, fmt.Errorf("failed to create main task: %w", err)
 	}
 
-	// 5. Put 到 Etcd (分发任务)
+	// 5. 分布式锁 + Put 到 Etcd
+	// 使用分布式锁防止重复下发（虽然这里 ID 是新的，但在高并发场景下，或者重试逻辑中可能有用）
+	// 这里更典型的用法可能是对某个资源（如 Node 任务队列）加锁
+	// 但根据需求 "任务下发使用分布式锁，防止重复下发"，我们可以对 MainTaskID 加锁
+	etcdCtx, cancel := context.WithTimeout(ctx, etcdTimeout)
+	defer cancel()
+
+	mutex, err := s.locker.Lock(etcdCtx, constant.EtcdLockPrefix+mainTask.ID, 10)
+	if err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to acquire mutex: %w", err)
+	}
+	// 使用新的 Context 确保 Unlock 能执行，即使 etcdCtx 超时
+	defer func() {
+		unlockCtx, unlockCancel := context.WithTimeout(context.Background(), etcdTimeout)
+		defer unlockCancel()
+		mutex.Unlock(unlockCtx)
+	}()
+
+	// 创建租约，确保任务数据不会永久滞留在 Etcd 中
+	// 默认 24 小时过期，给予足够的时间让节点获取
+	leaseID, err := s.etcd.GrantLease(etcdCtx, 3600*24)
+	if err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to grant lease: %w", err)
+	}
+
 	// Key: /file_sync/task/{node_id}/{sub_task_id}
 	// Agent 需要监听 /file_sync/task/{my_node_id}/
 	for _, subTask := range subTasks {
@@ -188,7 +227,7 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 
 		// Etcd Key 包含 NodeID，方便 Agent 只监听自己的任务
 		etcdKey := fmt.Sprintf("%s%s/%s", constant.EtcdTaskPrefix, subTask.NodeID, subTask.ID)
-		if _, err := s.etcd.Put(ctx, etcdKey, string(taskJSON)); err != nil {
+		if _, err := s.etcd.Put(etcdCtx, etcdKey, string(taskJSON), clientv3.WithLease(leaseID)); err != nil {
 			tx.Rollback()
 			return nil, fmt.Errorf("failed to put task to etcd: %w", err)
 		}
@@ -204,6 +243,28 @@ func (s *TaskService) CreateTask(ctx context.Context, req *CreateTaskReq) (*mode
 // processFile 下载文件并上传到 OSS
 // 返回: fileSize, fileHash, ossURL, objectKey, error
 func (s *TaskService) processFile(sourceURL, fileName string) (int64, string, string, string, error) {
+	// 优化：检查 SourceURL 是否已是当前 OSS 的文件
+	if key, ok := s.oss.ParseObjectKeyFromURL(sourceURL); ok {
+		// 验证文件存在并获取元数据
+		size, hash, err := s.oss.GetObjectInfo(key)
+		if err == nil {
+			// 文件存在，直接复用
+			// 生成一个新的签名 URL 给 Node 使用
+			url, err := s.oss.GetDownloadURL(key, 3600*24*365)
+			if err != nil {
+				// 如果获取签名失败，降级到下载逻辑
+				utils.GetLogger("task").Warnf("Optimization hit but failed to get download url for %s: %v", key, err)
+			} else {
+				utils.GetLogger("task").Infof("Optimized: SourceURL is already in OSS, reusing key: %s", key)
+				return size, hash, url, key, nil
+			}
+		} else {
+			utils.GetLogger("task").Warnf("Optimization failed: Object %s not found in OSS or error: %v", key, err)
+		}
+	} else {
+		utils.GetLogger("task").Infof("Optimization skipped: SourceURL %s not recognized as internal OSS", sourceURL)
+	}
+
 	// 下载临时文件
 	tmpFile, err := os.CreateTemp("", "sync-task-*")
 	if err != nil {
@@ -217,6 +278,10 @@ func (s *TaskService) processFile(sourceURL, fileName string) (int64, string, st
 		return 0, "", "", "", fmt.Errorf("failed to download source file: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, "", "", "", fmt.Errorf("failed to download source file: status code %d", resp.StatusCode)
+	}
 
 	// 计算哈希并写入临时文件
 	hash := md5.New()
@@ -271,6 +336,60 @@ func (s *TaskService) GetTaskByID(id string) (*model.MainTask, error) {
 		return nil, err
 	}
 	return &task, nil
+}
+
+// RepublishPendingTasks 重新发布处于 Pending 状态但 Etcd 中丢失的任务
+func (s *TaskService) RepublishPendingTasks(ctx context.Context) error {
+	var subTasks []model.SubTask
+	// 查找所有 Pending 状态的子任务
+	if err := s.db.Where("status = ?", constant.TaskStatusPending).Find(&subTasks).Error; err != nil {
+		return fmt.Errorf("failed to query pending tasks: %w", err)
+	}
+
+	if len(subTasks) == 0 {
+		return nil
+	}
+
+	fmt.Printf("Found %d pending tasks, checking Etcd status...\n", len(subTasks))
+
+	// 创建一个新的租约 (24h)
+	leaseID, err := s.etcd.GrantLease(ctx, 3600*24)
+	if err != nil {
+		return fmt.Errorf("failed to grant lease for republication: %w", err)
+	}
+
+	republishedCount := 0
+	for _, subTask := range subTasks {
+		etcdKey := fmt.Sprintf("%s%s/%s", constant.EtcdTaskPrefix, subTask.NodeID, subTask.ID)
+
+		// 检查 Etcd 中是否存在
+		resp, err := s.etcd.Get(ctx, etcdKey)
+		if err != nil {
+			fmt.Printf("Failed to check etcd key %s: %v\n", etcdKey, err)
+			continue
+		}
+
+		// 如果不存在，重新发布
+		if resp.Count == 0 {
+			taskJSON, err := json.Marshal(subTask)
+			if err != nil {
+				fmt.Printf("Failed to marshal task %s: %v\n", subTask.ID, err)
+				continue
+			}
+
+			if _, err := s.etcd.Put(ctx, etcdKey, string(taskJSON), clientv3.WithLease(leaseID)); err != nil {
+				fmt.Printf("Failed to republish task %s to etcd: %v\n", subTask.ID, err)
+				continue
+			}
+			republishedCount++
+			fmt.Printf("Republished task %s to node %s\n", subTask.ID, subTask.NodeID)
+		}
+	}
+
+	if republishedCount > 0 {
+		fmt.Printf("Successfully republished %d tasks\n", republishedCount)
+	}
+	return nil
 }
 
 // DeleteTask 删除主任务 (逻辑删除)

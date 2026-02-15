@@ -4,8 +4,9 @@ import (
 	"sync-node/central/handler"
 	"sync-node/central/service/alert"
 	"sync-node/central/service/task"
+	"sync-node/common/lock"
+	"sync-node/common/service/etcd"
 
-	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/fx"
 )
 
@@ -13,6 +14,7 @@ import (
 var TaskModule = fx.Module("task",
 	fx.Provide(
 		alert.NewAlertService,
+		lock.NewEtcdLocker,
 		task.NewTaskService,
 		handler.NewTaskHandler,
 		// Bind AlertService interface
@@ -22,8 +24,13 @@ var TaskModule = fx.Module("task",
 		},
 		// Bind EtcdClient interface for TaskService
 		// 绑定 Etcd 客户端接口
-		func(c *clientv3.Client) task.EtcdClient {
+		func(c *etcd.Client) task.EtcdClient {
 			return c
+		},
+		// Bind Locker interface
+		// 绑定分布式锁接口
+		func(l *lock.EtcdLocker) lock.Locker {
+			return l
 		},
 	),
 )

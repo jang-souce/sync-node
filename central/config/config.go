@@ -5,8 +5,14 @@ import (
 	"strings"
 	"sync-node/common/utils"
 
+	"bytes"
+	"context"
+	"sync-node/common/constant"
+	"sync-node/common/service/etcd"
+
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 )
 
 // Config 定义应用程序的配置结构，映射 config.yaml 文件
@@ -72,7 +78,7 @@ func InitConfig(path string) error {
 		return fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// 开启热更新监控，配置文件变更时自动重新加载
+	// 开启本地文件热更新监控
 	viper.WatchConfig()
 	viper.OnConfigChange(func(e fsnotify.Event) {
 		utils.GetLogger("config").Infof("Config file changed: %s", e.Name)
@@ -82,4 +88,48 @@ func InitConfig(path string) error {
 	})
 
 	return nil
+}
+
+// WatchEtcdConfig 监听 Etcd 中的全局配置变化并热更新
+// 监听 Key: /file_sync/config/global
+func WatchEtcdConfig(ctx context.Context, client *etcd.Client) {
+	key := constant.EtcdConfigPrefix + "global"
+	utils.GetLogger("config").Infof("Start watching etcd config key: %s", key)
+
+	// 1. 首次获取配置
+	resp, err := client.Get(ctx, key)
+	if err == nil && len(resp.Kvs) > 0 {
+		updateConfigFromEtcd(resp.Kvs[0].Value)
+	}
+
+	// 2. 监听变化
+	watchChan := client.Watch(ctx, key)
+	go func() {
+		for resp := range watchChan {
+			for _, ev := range resp.Events {
+				if ev.Type == mvccpb.PUT {
+					utils.GetLogger("config").Infof("Etcd config changed: %s", key)
+					updateConfigFromEtcd(ev.Kv.Value)
+				}
+			}
+		}
+	}()
+}
+
+func updateConfigFromEtcd(data []byte) {
+	// 使用 Viper 合并配置
+	viper.SetConfigType("yaml")
+	if err := viper.MergeConfig(bytes.NewBuffer(data)); err != nil {
+		utils.GetLogger("config").Errorf("Failed to merge etcd config: %v", err)
+		return
+	}
+
+	// 更新 GlobalConfig
+	// 注意：这里需要确保并发安全，或者接受短暂的不一致
+	// 简单起见，我们直接 Unmarshal 到 GlobalConfig
+	if err := viper.Unmarshal(GlobalConfig); err != nil {
+		utils.GetLogger("config").Errorf("Failed to unmarshal new config from etcd: %v", err)
+		return
+	}
+	utils.GetLogger("config").Info("Global config updated from Etcd")
 }

@@ -6,7 +6,11 @@ import "gorm.io/gorm"
 type MainTask struct {
 	ID         string         `json:"id" gorm:"primaryKey;type:varchar(36);comment:主任务ID"`
 	TotalCount int            `json:"totalCount" gorm:"not null;comment:子任务总数"`
+	Status     string         `json:"status" gorm:"type:varchar(20);default:'PENDING';comment:总体状态"`
+	TotalSize  int64          `json:"totalSize" gorm:"default:0;comment:总文件大小(字节)"`
+	SyncedSize int64          `json:"syncedSize" gorm:"default:0;comment:已同步总大小(字节)"`
 	CreatedAt  int64          `json:"createdAt" gorm:"autoCreateTime;comment:创建时间戳(Unix)"`
+	UpdatedAt  int64          `json:"updatedAt" gorm:"autoUpdateTime;comment:更新时间戳(Unix)"`
 	DeletedAt  gorm.DeletedAt `json:"deletedAt" gorm:"index;comment:软删除时间"`
 	SubTasks   []SubTask      `json:"subTasks" gorm:"foreignKey:MainTaskID"` // 关联子任务
 }

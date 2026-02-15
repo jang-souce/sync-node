@@ -1,0 +1,5 @@
+downloads/
+logs/
+.git/
+tmp/
+.DS_Store

@@ -21,8 +21,8 @@ postgres:
 oss:
   provider: "aliyun" # aliyun or minio
   endpoint: "oss-cn-beijing.aliyuncs.com"
-  accessKeyId: "key"
-  accessKeySecret: "secret"
+  accessKeyId: "accessKeyId"
+  accessKeySecret: "accessKeySecret"
   bucketName: "yang-sync"
 
 sms:
@@ -35,4 +35,4 @@ sms:
 
 log:
   level: "info"
-  path: "./central.log"
+  path: "./logs/central.log"

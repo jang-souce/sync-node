@@ -34,6 +34,7 @@ services:
       - sync-net
 
   central:
+    image: sync-node-central:latest
     build:
       context: .
       dockerfile: central/Dockerfile
@@ -56,10 +57,13 @@ services:
       - OSS_ACCESSKEYID=your-access-key-id
       - OSS_ACCESSKEYSECRET=your-access-key-secret
       - OSS_BUCKETNAME=yang-sync
+    volumes:
+      - ./logs/central:/root/logs
     networks:
       - sync-net
 
   node-1:
+    image: sync-node-edge:latest
     build:
       context: .
       dockerfile: node/Dockerfile
@@ -67,28 +71,85 @@ services:
     environment:
       - ETCD_ENDPOINTS=http://etcd:2379
       - NODE_ID=node-1
+      - NODE_WORKDIR=/root/downloads
+    volumes:
+      - ./downloads/node-1:/root/downloads
+      - ./logs/node-1:/root/logs
     networks:
       - sync-net
 
   node-2:
-    build:
-      context: .
-      dockerfile: node/Dockerfile
+    image: sync-node-edge:latest
     restart: always
+    depends_on:
+      - node-1
     environment:
       - ETCD_ENDPOINTS=http://etcd:2379
       - NODE_ID=node-2
+      - NODE_WORKDIR=/root/downloads
+    volumes:
+      - ./downloads/node-2:/root/downloads
+      - ./logs/node-2:/root/logs
     networks:
       - sync-net
 
   node-3:
-    build:
-      context: .
-      dockerfile: node/Dockerfile
+    image: sync-node-edge:latest
     restart: always
+    depends_on:
+      - node-1
     environment:
       - ETCD_ENDPOINTS=http://etcd:2379
       - NODE_ID=node-3
+      - NODE_WORKDIR=/root/downloads
+    volumes:
+      - ./downloads/node-3:/root/downloads
+      - ./logs/node-3:/root/logs
+    networks:
+      - sync-net
+
+  node-4:
+    image: sync-node-edge:latest
+    restart: always
+    depends_on:
+      - node-1
+    environment:
+      - ETCD_ENDPOINTS=http://etcd:2379
+      - NODE_ID=node-4
+      - NODE_WORKDIR=/root/downloads
+    volumes:
+      - ./downloads/node-4:/root/downloads
+      - ./logs/node-4:/root/logs
+    networks:
+      - sync-net
+
+  node-5:
+    image: sync-node-edge:latest
+    restart: always
+    depends_on:
+      - node-1
+    environment:
+      - ETCD_ENDPOINTS=http://etcd:2379
+      - NODE_ID=node-5
+      - NODE_WORKDIR=/root/downloads
+    volumes:
+      - ./downloads/node-5:/root/downloads
+      - ./logs/node-5:/root/logs
+    networks:
+      - sync-net
+
+  node-6:
+    image: sync-node-edge:latest
+    restart: always
+    depends_on:
+      - node-1
+    environment:
+      - ETCD_ENDPOINTS=http://etcd:2379
+      - NODE_ID=node-6
+      - NODE_WORKDIR=/root/downloads
+    volumes:
+      - ./downloads/node-6:/root/downloads
+      - ./logs/node-6:/root/logs
     networks:
       - sync-net
 

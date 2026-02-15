@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM docker.m.daocloud.io/library/golang:1.21-alpine AS builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o central-server ./central/main.go
 
 # Start a new stage from scratch
-FROM golang:1.21-alpine
+FROM docker.m.daocloud.io/library/golang:1.21-alpine
 
 WORKDIR /root/
 
@@ -29,7 +29,7 @@ RUN mkdir -p central
 COPY --from=builder /app/central/config.yaml ./central/
 
 # Copy view directory for H5 page
-COPY --from=builder /app/view ./view
+COPY --from=builder /app/central/view ./view
 
 EXPOSE 8088
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sync-node/central/config"
+	"sync-node/common/utils"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/minio/minio-go/v7"
@@ -32,6 +33,14 @@ type OSSService interface {
 	// DeleteFile 删除文件
 	// objectName: 对象名
 	DeleteFile(objectName string) error
+
+	// GetObjectInfo 获取对象元数据 (是否存在，大小，ETag)
+	// 返回: size, etag, error
+	GetObjectInfo(objectName string) (int64, string, error)
+
+	// ParseObjectKeyFromURL 从 URL 中解析 ObjectKey
+	// 如果 URL 属于当前 OSS Bucket，返回 (key, true)，否则返回 ("", false)
+	ParseObjectKeyFromURL(url string) (string, bool)
 }
 
 // AliyunOSS 阿里云 OSS 实现
@@ -93,7 +102,8 @@ func (s *AliyunOSS) UploadFile(objectName string, reader io.Reader, size int64, 
 	// 阿里云 SDK 的 PutObject 默认接受 reader
 	// 注意：aliyun oss sdk 对于 io.Reader 不会自动计算长度，建议使用 PutObject 结合 Option
 	// 但这里我们简单处理
-	err = bucket.PutObject(objectName, reader, oss.ContentType(contentType))
+	// 设置 ACL 为 Private，确保安全性
+	err = bucket.PutObject(objectName, reader, oss.ContentType(contentType), oss.ACL(oss.ACLPrivate))
 	if err != nil {
 		return "", err
 	}
@@ -123,6 +133,82 @@ func (s *AliyunOSS) DeleteFile(objectName string) error {
 		return err
 	}
 	return bucket.DeleteObject(objectName)
+}
+
+func (s *AliyunOSS) GetObjectInfo(objectName string) (int64, string, error) {
+	bucket, err := s.getBucket()
+	if err != nil {
+		return 0, "", err
+	}
+
+	props, err := bucket.GetObjectDetailedMeta(objectName)
+	if err != nil {
+		return 0, "", err
+	}
+
+	size := props.Get("Content-Length")
+	etag := strings.Trim(props.Get("ETag"), "\"")
+	etag = strings.ToLower(etag)
+
+	var sizeInt int64
+	fmt.Sscanf(size, "%d", &sizeInt)
+
+	return sizeInt, etag, nil
+}
+
+func (s *AliyunOSS) ParseObjectKeyFromURL(rawURL string) (string, bool) {
+	// 简单解析逻辑：检查是否包含 Endpoint 和 BucketName
+	// 阿里云 URL 格式通常为:
+	// 1. https://<BucketName>.<Endpoint>/<ObjectKey> (默认)
+	// 2. https://<Endpoint>/<BucketName>/<ObjectKey> (Path style)
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+
+	// 提取 Host 和 Path
+	host := u.Host
+	// 针对 Path 中包含 %2F 的情况，u.Path 可能已经被解码，或者未被解码
+	// 但在 OSS 中，如果 URL 是 .../test-data%2Fsmall_5.txt
+	// url.Parse 得到的 Path 可能是 /test-data/small_5.txt (已解码)
+	// 我们需要确保获取到的是解码后的路径
+	path := strings.TrimPrefix(u.Path, "/")
+
+	// 调试日志：打印解析到的 Host 和 Path
+	utils.GetLogger("oss").Infof("ParseObjectKeyFromURL: RawURL=%s, Host=%s, Path=%s, Endpoint=%s, BucketName=%s", rawURL, host, path, s.cfg.OSS.Endpoint, s.cfg.OSS.BucketName)
+
+	// 检查 Endpoint
+	// 注意：s.cfg.OSS.Endpoint 可能包含 "https://" 前缀，而 u.Host 通常不包含 scheme
+	// 例如：Host=yang-sync.oss-cn-beijing.aliyuncs.com, Endpoint=https://oss-cn-beijing.aliyuncs.com
+	// 需要处理掉 scheme 才能正确比较
+	endpoint := s.cfg.OSS.Endpoint
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+
+	if !strings.Contains(host, endpoint) {
+		utils.GetLogger("oss").Infof("ParseObjectKeyFromURL: Host %s does not contain Endpoint %s (processed)", host, endpoint)
+		return "", false
+	}
+
+	// 情况 1: Host = <BucketName>.<Endpoint>
+	expectedHost := fmt.Sprintf("%s.%s", s.cfg.OSS.BucketName, endpoint)
+	if host == expectedHost {
+		utils.GetLogger("oss").Infof("ParseObjectKeyFromURL: Host matches expectedHost %s. Returning path: %s", expectedHost, path)
+		return path, true
+	} else {
+		utils.GetLogger("oss").Infof("ParseObjectKeyFromURL: Host %s does not match ExpectedHost %s", host, expectedHost)
+	}
+
+	// 情况 2: Host = <Endpoint> 且 Path 以 <BucketName>/ 开头
+	if host == endpoint {
+		prefix := s.cfg.OSS.BucketName + "/"
+		if strings.HasPrefix(path, prefix) {
+			return strings.TrimPrefix(path, prefix), true
+		}
+	}
+
+	return "", false
 }
 
 func newMinIOOSS(cfg *config.Config) (*MinIOOSS, error) {
@@ -168,4 +254,27 @@ func (s *MinIOOSS) GetDownloadURL(objectName string, expiry int) (string, error)
 
 func (s *MinIOOSS) DeleteFile(objectName string) error {
 	return s.client.RemoveObject(context.Background(), s.bucketName, objectName, minio.RemoveObjectOptions{})
+}
+
+func (s *MinIOOSS) GetObjectInfo(objectName string) (int64, string, error) {
+	info, err := s.client.StatObject(context.Background(), s.bucketName, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		return 0, "", err
+	}
+	return info.Size, info.ETag, nil
+}
+
+func (s *MinIOOSS) ParseObjectKeyFromURL(rawURL string) (string, bool) {
+	// MinIO URL 格式通常为: http(s)://<Endpoint>/<BucketName>/<ObjectKey>
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+
+	path := strings.TrimPrefix(u.Path, "/")
+	prefix := s.bucketName + "/"
+	if strings.HasPrefix(path, prefix) {
+		return strings.TrimPrefix(path, prefix), true
+	}
+	return "", false
 }

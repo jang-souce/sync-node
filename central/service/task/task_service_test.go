@@ -10,40 +10,32 @@ import (
 	"testing"
 
 	"sync-node/common/constant"
+	"sync-node/common/lock"
 	"sync-node/common/model"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 // setupTestDB 根据环境变量初始化测试数据库
-// 如果设置了 TEST_DB_DSN，则使用 PostgreSQL；否则使用 SQLite 内存数据库
+// 默认使用 PostgreSQL，如果环境变量 TEST_DB_DSN 未设置，则尝试连接本地默认配置
 func setupTestDB(t *testing.T) *gorm.DB {
 	dsn := os.Getenv("TEST_DB_DSN")
-	var db *gorm.DB
-	var err error
-
-	if dsn != "" {
-		t.Log("Using PostgreSQL for testing...")
-		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
-		if err != nil {
-			t.Fatalf("failed to connect to postgres: %v", err)
-		}
-	} else {
-		t.Log("Using SQLite (In-Memory) for testing...")
-		// 使用不同的内存数据库名避免冲突，或者使用 file::memory:?cache=shared
-		// 这里为了简单统一，使用 shared cache
-		db, err = gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
-		if err != nil {
-			t.Fatalf("failed to connect to sqlite: %v", err)
-		}
+	if dsn == "" {
+		// 默认连接本地 Postgres (假设通过 docker-compose 启动)
+		dsn = "host=localhost user=user password=password dbname=sync_node_db port=5432 sslmode=disable TimeZone=Asia/Shanghai"
 	}
 
-	// 清理旧表以确保环境纯净 (无论是 Postgres 还是 SQLite)
+	t.Log("Using PostgreSQL for testing...")
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to connect to postgres: %v. Ensure PostgreSQL is running (e.g., via docker-compose up -d postgres).", err)
+	}
+
+	// 清理旧表以确保环境纯净
 	err = db.Migrator().DropTable(&model.MainTask{}, &model.SubTask{})
 	if err != nil {
 		t.Fatalf("failed to drop tables: %v", err)
@@ -84,6 +76,36 @@ func (m *MockEtcdClient) Get(ctx context.Context, key string, opts ...clientv3.O
 	return args.Get(0).(*clientv3.GetResponse), args.Error(1)
 }
 
+// MockMutex 模拟 Etcd 互斥锁
+type MockMutex struct {
+	mock.Mock
+}
+
+func (m *MockMutex) Unlock(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+// MockLocker 模拟分布式锁
+type MockLocker struct {
+	mock.Mock
+}
+
+// Lock 模拟获取锁
+func (m *MockLocker) Lock(ctx context.Context, key string, ttl int) (lock.DistributedLock, error) {
+	args := m.Called(ctx, key, ttl)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(lock.DistributedLock), args.Error(1)
+}
+
+// GrantLease 模拟 Etcd 的 GrantLease 操作
+func (m *MockEtcdClient) GrantLease(ctx context.Context, ttl int64) (clientv3.LeaseID, error) {
+	args := m.Called(ctx, ttl)
+	return args.Get(0).(clientv3.LeaseID), args.Error(1)
+}
+
 // MockOSSService 模拟 OSS 服务，用于单元测试
 type MockOSSService struct {
 	mock.Mock
@@ -111,6 +133,18 @@ func (m *MockOSSService) GetDownloadURL(objectName string, expiration int) (stri
 func (m *MockOSSService) DeleteFile(objectName string) error {
 	args := m.Called(objectName)
 	return args.Error(0)
+}
+
+// GetObjectInfo 模拟获取对象元数据
+func (m *MockOSSService) GetObjectInfo(objectName string) (int64, string, error) {
+	args := m.Called(objectName)
+	return args.Get(0).(int64), args.String(1), args.Error(2)
+}
+
+// ParseObjectKeyFromURL 模拟从 URL 解析对象 Key
+func (m *MockOSSService) ParseObjectKeyFromURL(url string) (string, bool) {
+	args := m.Called(url)
+	return args.String(0), args.Bool(1)
 }
 
 // MockAlertService 模拟报警服务
@@ -143,6 +177,8 @@ func TestTaskService_CreateTask(t *testing.T) {
 	mockEtcd := new(MockEtcdClient)
 	mockOSS := new(MockOSSService)
 
+	// 设置 OSS Mock 期望: 期望 ParseObjectKeyFromURL 被调用，并返回 false (模拟外部链接)
+	mockOSS.On("ParseObjectKeyFromURL", mock.Anything).Return("", false)
 	// 设置 OSS Mock 期望: 期望 UploadFile 被调用，并返回模拟 URL
 	mockOSS.On("UploadFile", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return("http://mock-oss/test", nil)
 	// 设置 OSS Mock 期望: 期望 GetDownloadURL 被调用，并返回签名 URL
@@ -151,8 +187,17 @@ func TestTaskService_CreateTask(t *testing.T) {
 	// 设置 Etcd Mock 期望: 期望 Put 被调用 (任务分发)，并返回成功
 	mockEtcd.On("Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil, nil)
 
+	// 设置 Locker Mock 期望: 期望 Lock 被调用
+	mockLocker := new(MockLocker)
+	mockMutex := new(MockMutex)
+	mockMutex.On("Unlock", mock.Anything).Return(nil)
+	mockLocker.On("Lock", mock.Anything, mock.Anything, mock.Anything).Return(mockMutex, nil)
+
+	// 设置 Etcd Mock 期望: 期望 GrantLease 被调用
+	mockEtcd.On("GrantLease", mock.Anything, mock.Anything).Return(clientv3.LeaseID(123), nil)
+
 	// 4. 创建 TaskService 实例
-	service := NewTaskService(db, mockEtcd, mockOSS, nil)
+	service := NewTaskService(db, mockEtcd, mockLocker, mockOSS, nil)
 
 	// 5. 构造测试请求数据
 	req := &CreateTaskReq{
@@ -211,7 +256,7 @@ func TestTaskService_GetTasks(t *testing.T) {
 	db.Create(&model.MainTask{ID: "2", CreatedAt: 200})
 
 	// 创建 Service (查询不需要 Etcd/OSS)
-	service := NewTaskService(db, nil, nil, nil)
+	service := NewTaskService(db, nil, nil, nil, nil)
 
 	// 测试列表查询
 	// 查询第 1 页，每页 10 条
@@ -246,7 +291,7 @@ func TestTaskService_DeleteTask(t *testing.T) {
 	etcdKey := fmt.Sprintf("%s%s/%s", constant.EtcdTaskPrefix, sub.NodeID, sub.ID)
 	mockEtcd.On("Delete", mock.Anything, etcdKey, mock.Anything).Return(&clientv3.DeleteResponse{Deleted: 1}, nil)
 
-	service := NewTaskService(db, mockEtcd, nil, nil)
+	service := NewTaskService(db, mockEtcd, nil, nil, nil)
 
 	// 执行删除
 	err = service.DeleteTask(context.Background(), "task-to-delete")

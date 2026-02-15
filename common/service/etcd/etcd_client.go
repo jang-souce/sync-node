@@ -83,13 +83,18 @@ func (c *Client) NewMutex(pfx string) (*concurrency.Mutex, error) {
 	return concurrency.NewMutex(session, pfx), nil
 }
 
+// Mutex 定义分布式锁接口
+type Mutex interface {
+	Unlock(ctx context.Context) error
+}
+
 type MutexHandle struct {
 	mu      *concurrency.Mutex
 	session *concurrency.Session
 }
 
-func (c *Client) AcquireMutex(ctx context.Context, pfx string, ttl int) (*MutexHandle, error) {
-	session, err := concurrency.NewSession(c.cli, concurrency.WithTTL(ttl))
+func (c *Client) AcquireMutex(ctx context.Context, pfx string, ttl int) (Mutex, error) {
+	session, err := concurrency.NewSession(c.cli, concurrency.WithTTL(ttl), concurrency.WithContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create etcd session: %w", err)
 	}

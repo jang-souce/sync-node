@@ -4,6 +4,10 @@ info:
   description: |
     主要定义了中心节点 (Central Node) 对外提供的 HTTP 管理接口，用于任务管理、节点监控和系统配置。
     该文档遵循 OpenAPI 3.0 规范，可直接导入 Apifox/Postman 进行调试。
+    
+    ### 限流说明
+    全局接口启用了限流保护（默认 100 QPS）。
+    如果触发限流，将返回 HTTP 429 Too Many Requests。
   version: 1.0.0
 servers:
   - url: http://localhost:8088
@@ -16,6 +20,8 @@ tags:
     description: 子节点监控与管理
   - name: Config
     description: 全局配置管理
+  - name: File
+    description: 文件上传与管理
 
 paths:
   /api/v1/tasks:
@@ -60,6 +66,8 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/MainTask'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
     post:
       tags:
         - Task
@@ -119,6 +127,8 @@ paths:
                     example: success
                   data:
                     $ref: '#/components/schemas/MainTask'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /api/v1/tasks/{id}:
     get:
@@ -148,6 +158,8 @@ paths:
                     type: string
                   data:
                     $ref: '#/components/schemas/MainTask'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
     delete:
       tags:
         - Task
@@ -167,6 +179,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /api/v1/nodes:
     get:
@@ -191,6 +205,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/NodeState'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /api/v1/nodes/{id}:
     get:
@@ -219,6 +235,8 @@ paths:
                     type: string
                   data:
                     $ref: '#/components/schemas/NodeState'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /api/v1/config:
     get:
@@ -241,6 +259,8 @@ paths:
                     type: string
                   data:
                     $ref: '#/components/schemas/GlobalConfig'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
     put:
       tags:
         - Config
@@ -259,8 +279,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/v1/files/upload:
+    post:
+      tags:
+        - File
+      summary: 上传文件
+      description: 上传文件到 OSS，并返回访问 URL。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 要上传的文件
+      responses:
+        '200':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    description: OSS 访问 URL
+                  object_name:
+                    type: string
+                    description: OSS 对象名称
+                  filename:
+                    type: string
+                    description: 原始文件名
+                  size:
+                    type: integer
+                    description: 文件大小
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/v1/files/download:
+    get:
+      tags:
+        - File
+      summary: 获取文件下载链接
+      description: 获取 OSS 文件的临时下载链接。
+      parameters:
+        - name: object_name
+          in: query
+          required: true
+          description: OSS 对象名称
+          schema:
+            type: string
+        - name: expiry
+          in: query
+          description: 有效期(秒)，默认 3600
+          schema:
+            type: integer
+            default: 3600
+      responses:
+        '200':
+          description: 获取成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    description: 临时下载链接
+                  expires_at:
+                    type: integer
+                    description: 过期时间戳
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/v1/files:
+    delete:
+      tags:
+        - File
+      summary: 删除文件
+      description: 从 OSS 删除文件。
+      parameters:
+        - name: object_name
+          in: query
+          required: true
+          description: OSS 对象名称
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "File deleted successfully"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
 components:
+  responses:
+    TooManyRequests:
+      description: 请求过于频繁，请稍后再试
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              code:
+                type: integer
+                example: 429
+              msg:
+                type: string
+                example: "Too Many Requests"
+
   schemas:
     ApiResponse:
       type: object
@@ -284,11 +424,31 @@ components:
           type: integer
           description: 子任务总数
           example: 10
+        status:
+          type: string
+          description: 总体状态
+          enum: [PENDING, DOWNLOADING, COMPLETED, FAILED]
+          example: "DOWNLOADING"
+        totalSize:
+          type: integer
+          format: int64
+          description: 总文件大小(字节)
+          example: 104857600
+        syncedSize:
+          type: integer
+          format: int64
+          description: 已同步总大小(字节)
+          example: 52428800
         createdAt:
           type: integer
           format: int64
           description: 创建时间戳
           example: 1678888888
+        updatedAt:
+          type: integer
+          format: int64
+          description: 更新时间戳
+          example: 1678888999
         subTasks:
           type: array
           description: 关联的子任务列表

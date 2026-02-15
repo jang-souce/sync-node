@@ -47,6 +47,10 @@ type ProgressReader struct {
 }
 
 func (pr *ProgressReader) Read(p []byte) (int, error) {
+	// 进行http 下载时，添加延迟，模拟网络延迟，测试断点续传使用
+	// if os.Getenv("TEST_SLOW_DOWNLOAD") == "true" {
+	// 	time.Sleep(50 * time.Millisecond)
+	// }
 	n, err := pr.Reader.Read(p)
 	pr.Current += int64(n)
 	if pr.Callback != nil {
@@ -106,6 +110,7 @@ func (s *HttpService) downloadOneAttempt(ctx context.Context, url string, destPa
 
 	// 如果有部分文件，设置 Range 头
 	if startByte > 0 {
+		utils.GetLogger("http").Infof("Resuming download from offset: %d", startByte)
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startByte))
 	}
 

@@ -35,6 +35,8 @@ func (s *AliyunSMSAlertService) SendAlert(param map[string]string) error {
 	}
 
 	// 触发告警，发送短信通知（告警类型、节点ID、任务ID、错误信息、触发时间）
+	utils.GetLogger("alert").Infof("Triggering alert logic. Params: %v, Target Phones: %v", param, s.cfg.SMS.PhoneNumbers)
+
 	err := s.client.SendSMS(s.cfg.SMS.PhoneNumbers, s.cfg.SMS.SignName, s.cfg.SMS.TemplateCode, param)
 	if err != nil {
 		return err

@@ -123,11 +123,27 @@ func (m *TaskModule) handleTaskPut(value []byte) {
 
 // processTask 处理单个任务
 func (m *TaskModule) processTask(task model.SubTask) {
-	// 1. 更新状态为下载中
-	m.etcdService.UpdateTaskStatus(context.Background(), task.ID, constant.TaskStatusDownloading, "", nil)
-
-	// 2. 确定目标文件路径
+	// 1. 确定目标文件路径
 	destPath := filepath.Join(m.workDir, task.FileName)
+
+	// 优化：如果文件已存在且 Hash 匹配，直接跳过下载
+	if task.FileHash != "" && utils.FileExists(destPath) {
+		hash, err := utils.FileMD5(destPath)
+		if err == nil && hash == task.FileHash {
+			m.logger.Infof("Task %s: File %s already exists with matching hash, skipping download.", task.ID, task.FileName)
+
+			// 获取文件大小
+			info, _ := os.Stat(destPath)
+			extra := map[string]interface{}{
+				"syncedSize": info.Size(),
+			}
+			m.etcdService.UpdateTaskStatus(context.Background(), task.ID, constant.TaskStatusCompleted, "", extra)
+			return
+		}
+	}
+
+	// 2. 更新状态为下载中
+	m.etcdService.UpdateTaskStatus(context.Background(), task.ID, constant.TaskStatusDownloading, "", nil)
 
 	// 进度上报变量
 	var syncedSize int64

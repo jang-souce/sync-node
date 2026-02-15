@@ -13,4 +13,4 @@ etcd:
 
 log:
   level: "info"
-  path: "./node.log"
+  path: "./logs/node.log"

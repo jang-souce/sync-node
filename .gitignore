@@ -7,7 +7,6 @@
 *.dll
 *.so
 *.dylib
-*.md
 
 # Test binary, built with `go test -c`
 *.test
@@ -33,6 +32,8 @@ go.work.sum
 # .vscode/
 config/config.yaml
 .env
-config/config.yaml
-.env
 view/
+downloads/
+logs/
+tools/
+integration_test/

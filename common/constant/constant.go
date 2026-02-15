@@ -7,6 +7,7 @@ const (
 	EtcdTaskPrefix       = EtcdRootPrefix + "task/"
 	EtcdTaskStatusPrefix = EtcdRootPrefix + "status/"
 	EtcdConfigPrefix     = EtcdRootPrefix + "config/"
+	EtcdLockPrefix       = EtcdRootPrefix + "lock/"
 
 	// 节点状态
 	NodeStatusOnline  = "online"

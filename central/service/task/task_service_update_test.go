@@ -45,7 +45,7 @@ func TestTaskService_UpdateTaskStatus(t *testing.T) {
 	mockOSS := new(MockOSSService)
 
 	// 创建 Service 实例
-	service := NewTaskService(db, nil, mockOSS, mockAlert)
+	service := NewTaskService(db, nil, nil, mockOSS, mockAlert)
 
 	// 4. 测试场景: 成功更新状态
 	// 将状态更新为 Downloading，并设置同步进度为 100

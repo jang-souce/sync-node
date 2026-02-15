@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"strings"
 	"sync-node/central/config"
 	"sync-node/central/handler"
 	"sync-node/central/router"
@@ -10,99 +13,203 @@ import (
 	"sync-node/central/service/node"
 	"sync-node/central/service/oss"
 	"sync-node/central/service/task"
+	"sync-node/common/lock"
 	"sync-node/common/service/etcd"
 	"sync-node/common/service/pg"
 	"sync-node/common/utils"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/fx"
+	"gorm.io/gorm"
 )
 
 func main() {
-	// 1. 初始化配置
-	// 加载配置文件，如果失败则直接 panic
-	if err := config.InitConfig("central/config.yaml"); err != nil {
-		panic(fmt.Sprintf("Failed to init config: %v", err))
-	}
+	app := fx.New(
+		// 1. Provide Dependencies
+		fx.Provide(
+			// Config
+			NewConfig,
+			// DB
+			NewDB,
+			// Etcd
+			NewEtcdClient,
+			// Lock
+			lock.NewEtcdLocker,
+			fx.Annotate(
+				func(l *lock.EtcdLocker) lock.Locker { return l },
+				fx.As(new(lock.Locker)),
+			),
+			// Services
+			oss.NewOSSService,
+			fx.Annotate(
+				alert.NewAlertService,
+				fx.As(new(alert.AlertService)),
+			),
+			// TaskService 需要的 EtcdClient 接口，这里直接使用 etcd.Client
+			// 但 TaskService 定义的 EtcdClient 接口可能与 etcd.Client 不完全匹配（如果有额外方法）
+			// 检查发现 TaskService 定义的接口方法 etcd.Client 都实现了
+			// 需要让 Fx 知道 etcd.Client 实现了 task.EtcdClient
+			fx.Annotate(
+				func(c *etcd.Client) *etcd.Client { return c },
+				fx.As(new(task.EtcdClient)),
+			),
+			// ConfigService 需要的 EtcdClient 接口
+			fx.Annotate(
+				func(c *etcd.Client) *etcd.Client { return c },
+				fx.As(new(configServicePkg.EtcdClient)),
+			),
+			// 同样的，ConfigService 也需要 EtcdClient，但它直接使用了 *etcd.Client 类型（假设）
+			// 如果 ConfigService 使用接口，也需要处理。
+			// 检查 main.go 原代码: configService := configServicePkg.NewConfigService(etcdClient)
+			// 假设 NewConfigService 接受 *etcd.Client
+			task.NewTaskService,
+			node.NewNodeService,
+			// Monitor needs NodeProvider
+			fx.Annotate(
+				func(s *node.NodeService) *node.NodeService { return s },
+				fx.As(new(node.NodeProvider)),
+			),
+			configServicePkg.NewConfigService,
 
-	// 初始化日志
-	// 根据配置设置日志级别和输出路径
-	utils.InitLogger(config.GlobalConfig.Log.Level, config.GlobalConfig.Log.Path)
-	log := utils.GetLogger("main")
+			// Node Monitor & Watcher
+			node.NewMonitor,
+			node.NewWatcher,
 
-	// 2. 初始化底层依赖 (Etcd, PG)
-	// 初始化 Etcd 客户端，用于服务发现和分布式协调
-	etcdClient, err := etcd.NewClient(
-		config.GlobalConfig.Etcd.Endpoints,
-		config.GlobalConfig.Etcd.Username,
-		config.GlobalConfig.Etcd.Password,
+			// Handlers
+			handler.NewTaskHandler,
+			handler.NewNodeHandler,
+			handler.NewConfigHandler,
+			handler.NewFileHandler,
+
+			// Gin Engine
+			gin.Default,
+		),
+
+		// 2. Invoke Startup Logic
+		fx.Invoke(
+			InitLogger,
+			RegisterRoutes,
+			StartServer,
+			StartBackgroundServices,
+		),
 	)
-	if err != nil {
-		log.Fatalf("Failed to init etcd client: %v", err)
-	}
-	defer etcdClient.Close()
 
-	// 初始化 PostgreSQL 客户端，用于持久化数据
+	app.Run()
+}
+
+// NewConfig 加载配置
+func NewConfig() (*config.Config, error) {
+	if err := config.InitConfig("central/config.yaml"); err != nil {
+		return nil, fmt.Errorf("failed to init config: %w", err)
+	}
+	return config.GlobalConfig, nil
+}
+
+// NewDB 初始化数据库
+func NewDB(cfg *config.Config) (*gorm.DB, error) {
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%d sslmode=%s",
-		config.GlobalConfig.Postgres.Host,
-		config.GlobalConfig.Postgres.User,
-		config.GlobalConfig.Postgres.Password,
-		config.GlobalConfig.Postgres.DBName,
-		config.GlobalConfig.Postgres.Port,
-		config.GlobalConfig.Postgres.SSLMode,
+		cfg.Postgres.Host,
+		cfg.Postgres.User,
+		cfg.Postgres.Password,
+		cfg.Postgres.DBName,
+		cfg.Postgres.Port,
+		cfg.Postgres.SSLMode,
 	)
 	pgClient, err := pg.NewClient(dsn)
 	if err != nil {
-		log.Fatalf("Failed to init pg client: %v", err)
+		return nil, fmt.Errorf("failed to init pg client: %w", err)
 	}
-	// 自动迁移数据库结构，确保表结构最新
+	// 自动迁移
 	if err := pgClient.AutoMigrate(); err != nil {
-		log.Fatalf("Failed to migrate db: %v", err)
+		return nil, fmt.Errorf("failed to migrate db: %w", err)
 	}
+	return pgClient.GetDB(), nil
+}
 
-	// 3. 初始化核心服务
-	// 初始化 OSS 服务，用于文件存储
-	ossService, err := oss.NewOSSService(config.GlobalConfig)
-	if err != nil {
-		log.Fatalf("Failed to init oss service: %v", err)
-	}
+// NewEtcdClient 初始化 Etcd
+func NewEtcdClient(cfg *config.Config) (*etcd.Client, error) {
+	return etcd.NewClient(
+		cfg.Etcd.Endpoints,
+		cfg.Etcd.Username,
+		cfg.Etcd.Password,
+	)
+}
 
-	// 初始化报警服务，用于发送系统告警
-	alertService, err := alert.NewAlertService(config.GlobalConfig)
-	if err != nil {
-		log.Fatalf("Failed to init alert service: %v", err)
-	}
+// InitLogger 初始化日志
+func InitLogger(cfg *config.Config) {
+	utils.InitLogger(cfg.Log.Level, cfg.Log.Path)
+}
 
-	// 初始化各业务服务
-	taskService := task.NewTaskService(pgClient.GetDB(), etcdClient, ossService, alertService)
-	nodeService := node.NewNodeService(pgClient.GetDB())
-	configService := configServicePkg.NewConfigService(etcdClient)
+// RegisterRoutes 注册路由
+func RegisterRoutes(
+	r *gin.Engine,
+	taskH *handler.TaskHandler,
+	nodeH *handler.NodeHandler,
+	configH *handler.ConfigHandler,
+	fileH *handler.FileHandler,
+) {
+	router.InitRouter(r, taskH, nodeH, configH, fileH)
+}
 
-	// 启动节点监控
-	// 定期检查节点健康状态
-	monitor := node.NewMonitor(nodeService, alertService)
-	monitor.Start()
-	defer monitor.Stop()
+// StartServer 启动 HTTP 服务
+func StartServer(lc fx.Lifecycle, r *gin.Engine, cfg *config.Config) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			port := cfg.Server.Port
+			utils.GetLogger("main").Infof("Starting Central Node HTTP server on %s", port)
+			addr := port
+			if !strings.HasPrefix(port, ":") {
+				addr = ":" + port
+			}
+			go func() {
+				if err := r.Run(addr); err != nil && err != http.ErrServerClosed {
+					utils.GetLogger("main").Errorf("Failed to start server: %v", err)
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			utils.GetLogger("main").Info("Stopping HTTP server")
+			return nil
+		},
+	})
+}
 
-	// 启动节点 Watcher (监听状态变化、断联报警、在线统计)
-	// 实时监听 Etcd 事件
-	watcher := node.NewWatcher(etcdClient, pgClient.GetDB(), alertService, taskService)
-	watcher.Start()
-	defer watcher.Stop()
+// StartBackgroundServices 启动后台服务 (Watcher, Monitor, ConfigWatch)
+func StartBackgroundServices(
+	lc fx.Lifecycle,
+	monitor *node.Monitor,
+	watcher *node.Watcher,
+	etcdClient *etcd.Client,
+	taskService *task.TaskService,
+) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			// 启动节点监控
+			monitor.Start()
+			// 启动节点 Watcher
+			watcher.Start()
+			// 启动 Etcd 配置监听
+			// 注意：WatchEtcdConfig 内部是异步的，或者我们需要在这里异步调用
+			// WatchEtcdConfig 本身启动了 go routine
+			config.WatchEtcdConfig(context.Background(), etcdClient)
 
-	// 4. 初始化 Handlers
-	// 绑定服务到 HTTP 处理层
-	taskHandler := handler.NewTaskHandler(taskService)
-	nodeHandler := handler.NewNodeHandler(nodeService)
-	configHandler := handler.NewConfigHandler(configService)
+			// 异步启动任务重新发布（修复 Pending 任务丢失问题）
+			go func() {
+				// 稍微延迟启动，确保系统完全就绪
+				// time.Sleep(5 * time.Second) // Optional
+				utils.GetLogger("main").Info("Starting pending tasks recovery...")
+				if err := taskService.RepublishPendingTasks(context.Background()); err != nil {
+					utils.GetLogger("main").Errorf("Failed to republish pending tasks: %v", err)
+				}
+			}()
 
-	// 5. 启动 HTTP 服务
-	r := gin.Default()
-
-	// 初始化路由规则
-	router.InitRouter(r, taskHandler, nodeHandler, configHandler)
-
-	log.Infof("Starting Central Node HTTP server on %s", config.GlobalConfig.Server.Port)
-	if err := r.Run(config.GlobalConfig.Server.Port); err != nil {
-		log.Fatalf("Failed to start HTTP server: %v", err)
-	}
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			monitor.Stop()
+			watcher.Stop()
+			return nil
+		},
+	})
 }
