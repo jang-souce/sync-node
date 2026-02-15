@@ -17,7 +17,7 @@ function build_images {
 function start {
     build_images
     echo "Starting Sync-Node services..."
-    docker-compose up -d
+    docker compose up -d
     if [ $? -eq 0 ]; then
         echo "Services started successfully."
         echo "Central Dashboard: http://localhost:8088/view/index.html"
@@ -28,7 +28,7 @@ function start {
 
 function stop {
     echo "Stopping Sync-Node services..."
-    docker-compose down
+    docker compose down
 }
 
 function restart {
@@ -37,7 +37,7 @@ function restart {
 }
 
 function logs {
-    docker-compose logs -f
+    docker compose logs -f
 }
 
 if [ -z "$COMMAND" ]; then
